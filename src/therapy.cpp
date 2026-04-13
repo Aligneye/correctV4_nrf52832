@@ -19,18 +19,16 @@ static const char* PATTERN_NAMES[] = {
     "Pulse Ramp"    // 9
 };
 
-// ── Per-pattern duration options (ms): 1 min / 1.5 min / 2 min ────────────
-static const unsigned long PATTERN_DURATIONS[] = { 60000UL, 90000UL, 120000UL };
-#define PATTERN_DURATION_COUNT 3
-
 // ── Session state ──────────────────────────────────────────────────────────
 static TherapyState  therapyState        = THERAPY_IDLE;
 static unsigned long therapyStartMs      = 0;
 static unsigned long therapyDurationMs   = THERAPY_DURATION_10_MIN;
 
 // patternDurations[i] holds the randomly chosen duration for each pattern slot
-static int           patternSequence[PATTERN_COUNT];
-static unsigned long patternDurations[PATTERN_COUNT];
+// Max slots needed: 20 min = 1200s, with 60s min per pattern → max 20 slots
+#define MAX_THERAPY_PATTERNS 20
+static int           patternSequence[MAX_THERAPY_PATTERNS];
+static unsigned long patternDurations[MAX_THERAPY_PATTERNS];
 static int           totalPatterns       = 0;
 static int           currentPatternIndex = 0;
 static unsigned long patternStartMs      = 0;
@@ -55,51 +53,62 @@ static void shuffleArr(int* arr, int n) {
     }
 }
 
-// ── Build pattern sequence + per-pattern random durations ─────────────────
+// ── Build pattern sequence: all patterns = 1 min each ─────────────────────
 static void initializePatternSequence() {
     currentPatternIndex = 0;
 
-    // First pattern is always Muscle Activation, fixed 1 min (warm-up)
+    // Determine number of patterns based on selected duration
+    int minutes = therapyDurationMs / 60000UL;
+    totalPatterns = minutes;  // 5 min → 5 patterns, 10 → 10, 20 → 20
+
+    // Safety: cap at max array size
+    if (totalPatterns > MAX_THERAPY_PATTERNS) {
+        rtt.println("[ERROR] Too many patterns! Capping at 20.");
+        totalPatterns = MAX_THERAPY_PATTERNS;
+    }
+
+    // First pattern is always Muscle Activation, 1 min
     patternSequence[0]  = PATTERN_MUSCLE_ACTIVATION;
     patternDurations[0] = 60000UL;
 
-    int minutes = therapyDurationMs / 60000UL;
-    int slots;
-    if      (minutes == 5)  slots = 3;
-    else if (minutes == 20) slots = 10;
-    else                    slots = 5;   // 10 min default
-
-    totalPatterns = slots;
-
-    // Build shuffled pool of remaining 9 patterns
-    int remaining[PATTERN_COUNT - 1];
-    int count = 0;
+    // Build pool of remaining 9 patterns (all except Muscle Activation)
+    int patternPool[PATTERN_COUNT - 1];
+    int poolSize = 0;
     for (int i = PATTERN_REVERSE_RAMP; i < PATTERN_COUNT; i++) {
-        remaining[count++] = i;
+        patternPool[poolSize++] = i;
     }
-    shuffleArr(remaining, count);
 
-    // Fill remaining slots with random pattern + random duration
-    for (int i = 1; i < slots; i++) {
-        patternSequence[i]  = remaining[i - 1];
-        patternDurations[i] = PATTERN_DURATIONS[random(0, PATTERN_DURATION_COUNT)];
+    // Shuffle the pool
+    shuffleArr(patternPool, poolSize);
+
+    // Fill remaining slots: try to use unique patterns first, then repeat if needed
+    for (int i = 1; i < totalPatterns; i++) {
+        // Use patterns from shuffled pool, wrap around if we need more than 9
+        int poolIndex = (i - 1) % poolSize;
+
+        // If we've exhausted the pool and need to repeat, reshuffle for variety
+        if (i > 1 && poolIndex == 0) {
+            shuffleArr(patternPool, poolSize);
+        }
+
+        patternSequence[i]  = patternPool[poolIndex];
+        patternDurations[i] = 60000UL;  // All patterns = 1 min
     }
 
     // ── Print full session plan ────────────────────────────────────────────
     rtt.println("=== Therapy Session Plan ===");
-    rtt.print("Total patterns: "); rtt.println(slots);
-    unsigned long totalMs = 0;
-    for (int i = 0; i < slots; i++) {
-        totalMs += patternDurations[i];
-        rtt.print("  ["); rtt.print(i + 1); rtt.print("] ");
-        rtt.print(PATTERN_NAMES[patternSequence[i]]);
-        rtt.print(" — ");
-        rtt.print((unsigned long)(patternDurations[i] / 1000UL));
-        rtt.println(" s");
+    rtt.print("Session: ");
+    rtt.print(minutes);
+    rtt.print(" min → ");
+    rtt.print(totalPatterns);
+    rtt.println(" patterns (1 min each)");
+
+    for (int i = 0; i < totalPatterns; i++) {
+        rtt.print("  [");
+        rtt.print(i + 1);
+        rtt.print("] ");
+        rtt.println(PATTERN_NAMES[patternSequence[i]]);
     }
-    rtt.print("Estimated total: ");
-    rtt.print((unsigned long)(totalMs / 1000UL));
-    rtt.println(" s");
     rtt.println("============================");
 }
 
@@ -108,19 +117,17 @@ static void printTick(unsigned long now) {
     if (now - lastTickMs < 1000UL) return;
     lastTickMs = now;
 
-    unsigned long elapsed   = now - therapyStartMs;
-    unsigned long patElapsed = now - patternStartMs;
-    unsigned long patRemain  = (patElapsed < patternDurations[currentPatternIndex])
-                                ? patternDurations[currentPatternIndex] - patElapsed
-                                : 0;
+    unsigned long elapsed      = now - therapyStartMs;
+    unsigned long patElapsed   = now - patternStartMs;
+    unsigned long patRemain    = (patElapsed < 60000UL) ? 60000UL - patElapsed : 0;
 
-    unsigned long totalElapsedS  = elapsed / 1000UL;
-    unsigned long patElapsedS    = patElapsed / 1000UL;
-    unsigned long patRemainS     = patRemain / 1000UL;
+    unsigned long totalElapsedS = elapsed / 1000UL;
+    unsigned long patElapsedS   = patElapsed / 1000UL;
+    unsigned long patRemainS    = patRemain / 1000UL;
 
     rtt.print("[Therapy] ");
     rtt.print(totalElapsedS);
-    rtt.print("s elapsed | Pattern ");
+    rtt.print("s | Pattern ");
     rtt.print(currentPatternIndex + 1);
     rtt.print("/");
     rtt.print(totalPatterns);
@@ -128,29 +135,27 @@ static void printTick(unsigned long now) {
     rtt.print(PATTERN_NAMES[patternSequence[currentPatternIndex]]);
     rtt.print("] ");
     rtt.print(patElapsedS);
-    rtt.print("s / ");
-    rtt.print(patternDurations[currentPatternIndex] / 1000UL);
-    rtt.print("s | remain ");
+    rtt.print("s/60s | ");
     rtt.print(patRemainS);
-    rtt.println("s");
+    rtt.println("s left");
 }
 
 // ── Individual therapy patterns ────────────────────────────────────────────
 
-// Muscle Activation — 30% → 100% ramp over its allotted duration
-static void patternMuscleActivation(unsigned long e, unsigned long dur) {
-    if (e <= dur) {
-        float pct = 30.0f + ((float)e / (float)dur) * 70.0f;
+// Muscle Activation — 30% → 100% ramp over 60s
+static void patternMuscleActivation(unsigned long e) {
+    if (e <= 60000UL) {
+        float pct = 30.0f + ((float)e / 60000.0f) * 70.0f;
         motorSetDuty(constrain((int)((pct / 100.0f) * 255.0f), 0, 255));
     } else {
         motorSetDuty(0);
     }
 }
 
-// Reverse Ramp — 100% → 30%
-static void patternReverseRamp(unsigned long e, unsigned long dur) {
-    if (e <= dur) {
-        float pct = 100.0f - ((float)e / (float)dur) * 70.0f;
+// Reverse Ramp — 100% → 30% over 60s
+static void patternReverseRamp(unsigned long e) {
+    if (e <= 60000UL) {
+        float pct = 100.0f - ((float)e / 60000.0f) * 70.0f;
         motorSetDuty(constrain((int)((pct / 100.0f) * 255.0f), 0, 255));
     } else {
         motorSetDuty(0);
@@ -232,19 +237,19 @@ static void patternPulseRamp(unsigned long e) {
 }
 
 // ── Pattern dispatcher ─────────────────────────────────────────────────────
-static void executePattern(int idx, unsigned long elapsed, unsigned long dur) {
+static void executePattern(int idx, unsigned long elapsed) {
     switch (idx) {
-        case PATTERN_MUSCLE_ACTIVATION: patternMuscleActivation(elapsed, dur); break;
-        case PATTERN_REVERSE_RAMP:      patternReverseRamp(elapsed, dur);      break;
-        case PATTERN_RAMP_PATTERN:      patternRampPattern(elapsed);            break;
-        case PATTERN_WAVE_THERAPY:      patternWaveTherapy(elapsed);            break;
-        case PATTERN_SLOW_WAVE:         patternSlowWave(elapsed);               break;
-        case PATTERN_SINUSOIDAL_WAVE:   patternSinusoidalWave(elapsed);         break;
-        case PATTERN_TRIANGLE_WAVE:     patternTriangleWave(elapsed);           break;
-        case PATTERN_DOUBLE_WAVE:       patternDoubleWave(elapsed);             break;
-        case PATTERN_ANTI_FATIGUE:      patternAntiFatigue(elapsed);            break;
-        case PATTERN_PULSE_RAMP:        patternPulseRamp(elapsed);              break;
-        default:                        motorSetDuty(0);                        break;
+        case PATTERN_MUSCLE_ACTIVATION: patternMuscleActivation(elapsed); break;
+        case PATTERN_REVERSE_RAMP:      patternReverseRamp(elapsed);      break;
+        case PATTERN_RAMP_PATTERN:      patternRampPattern(elapsed);      break;
+        case PATTERN_WAVE_THERAPY:      patternWaveTherapy(elapsed);      break;
+        case PATTERN_SLOW_WAVE:         patternSlowWave(elapsed);         break;
+        case PATTERN_SINUSOIDAL_WAVE:   patternSinusoidalWave(elapsed);   break;
+        case PATTERN_TRIANGLE_WAVE:     patternTriangleWave(elapsed);     break;
+        case PATTERN_DOUBLE_WAVE:       patternDoubleWave(elapsed);       break;
+        case PATTERN_ANTI_FATIGUE:      patternAntiFatigue(elapsed);      break;
+        case PATTERN_PULSE_RAMP:        patternPulseRamp(elapsed);        break;
+        default:                        motorSetDuty(0);                  break;
     }
 }
 
@@ -286,12 +291,11 @@ void therapyStop() {
 void therapyLoop() {
     if (therapyState != THERAPY_RUNNING) return;
 
-    unsigned long now          = millis();
+    unsigned long now            = millis();
     unsigned long patternElapsed = now - patternStartMs;
-    unsigned long curDur         = patternDurations[currentPatternIndex];
 
-    // ── Advance to next pattern when current duration elapsed ────────────
-    if (patternElapsed >= curDur) {
+    // ── Advance to next pattern after 60 seconds ─────────────────────────
+    if (patternElapsed >= 60000UL) {
         currentPatternIndex++;
         patternStartMs   = now;
         patternElapsed   = 0;
@@ -302,27 +306,26 @@ void therapyLoop() {
         }
 
         rtt.println("----------------------------------------");
-        rtt.print("[Pattern change] -> ");
-        rtt.print(PATTERN_NAMES[patternSequence[currentPatternIndex]]);
-        rtt.print("  (");
-        rtt.print((unsigned long)(patternDurations[currentPatternIndex] / 1000UL));
-        rtt.println(" s)");
+        rtt.print("[Pattern ");
+        rtt.print(currentPatternIndex + 1);
+        rtt.print("/");
+        rtt.print(totalPatterns);
+        rtt.print("] ");
+        rtt.println(PATTERN_NAMES[patternSequence[currentPatternIndex]]);
         if (currentPatternIndex + 1 < totalPatterns) {
-            rtt.print("  Next up: ");
+            rtt.print("  Next: ");
             rtt.println(PATTERN_NAMES[patternSequence[currentPatternIndex + 1]]);
         } else {
-            rtt.println("  Next up: (last pattern)");
+            rtt.println("  (Last pattern)");
         }
         rtt.println("----------------------------------------");
-
-        curDur = patternDurations[currentPatternIndex];
     }
 
     // ── Per-second status tick ────────────────────────────────────────────
     printTick(now);
 
     // ── Run current pattern ───────────────────────────────────────────────
-    executePattern(patternSequence[currentPatternIndex], patternElapsed, curDur);
+    executePattern(patternSequence[currentPatternIndex], patternElapsed);
 }
 
 bool therapyIsRunning() {
@@ -336,15 +339,11 @@ unsigned long therapyGetElapsedMs() {
 
 unsigned long therapyGetRemainingMs() {
     if (therapyState != THERAPY_RUNNING) return 0;
-    // Sum remaining durations from current pattern onward
-    unsigned long rem = 0;
+    // All patterns are 60s each
     unsigned long patElapsed = millis() - patternStartMs;
-    unsigned long curDur = patternDurations[currentPatternIndex];
-    rem += (patElapsed < curDur) ? (curDur - patElapsed) : 0;
-    for (int i = currentPatternIndex + 1; i < totalPatterns; i++) {
-        rem += patternDurations[i];
-    }
-    return rem;
+    unsigned long currentPatRemain = (patElapsed < 60000UL) ? (60000UL - patElapsed) : 0;
+    unsigned long futurePatterns = (totalPatterns - currentPatternIndex - 1) * 60000UL;
+    return currentPatRemain + futurePatterns;
 }
 
 const char* therapyGetCurrentPatternName() {
