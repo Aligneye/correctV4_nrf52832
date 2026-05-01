@@ -1,11 +1,11 @@
 #include "bluetooth.h"
+#include "calibration.h"
 
 extern RTTStream rtt;
 
 static bool connected = false;
 
 void bluetoothSetup() {
-    rtt.println("Bluetooth module ready");
     // TODO: init BLE stack (NimBLE / Bluefruit), set device name, configure services
 }
 
@@ -25,4 +25,8 @@ void bluetoothStopAdvertising() {
 
 bool bluetoothIsConnected() {
     return connected;
+}
+
+void bluetoothRequestCalibrationStart() {
+    calibrationRequestStart();
 }

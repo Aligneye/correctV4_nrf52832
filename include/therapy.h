@@ -13,7 +13,8 @@ void therapySetup();
 void therapyLoop();
 
 void therapyStart();
-void therapyStop();
+/** Stops motor + therapy state. If returnToTraining is false, leaves currentMode unchanged (e.g. sub-mode restart). */
+void therapyStop(bool returnToTraining = true);
 
 bool therapyIsRunning();
 unsigned long therapyGetElapsedMs();

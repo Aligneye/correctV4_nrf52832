@@ -1,6 +1,8 @@
 #include "storage.h"
 #include "nrf.h"
 #include <RTTStream.h>
+#include <string.h>
+#include <math.h>
 
 extern RTTStream rtt;
 
@@ -10,20 +12,31 @@ extern RTTStream rtt;
 // this project place the application well below this address.
 static constexpr uint32_t SETTINGS_PAGE_ADDR = 0x0007F000UL;
 static constexpr uint32_t SETTINGS_MAGIC     = 0x414C4733UL;  // "ALG3"
-static constexpr uint16_t SETTINGS_VERSION   = 1u;
+static constexpr uint16_t SETTINGS_VERSION   = 2u;
 
-struct PersistedSettings {
+struct PersistedSettingsV1 {
     uint32_t magic;
     uint16_t version;
     uint8_t  therapySubModeIndex;
     uint8_t  reserved;
 };
 
+struct PersistedSettings {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t  therapySubModeIndex;
+    uint8_t  reserved;
+    float     calY;
+    float     calZ;
+};
+
 static PersistedSettings g_settings = {
     SETTINGS_MAGIC,
     SETTINGS_VERSION,
-    1u,  // default: 10 min
-    0u
+    0u,
+    0u,
+    6.75f,
+    6.75f
 };
 
 // ── NVMC helpers ───────────────────────────────────────────────────────────
@@ -67,14 +80,35 @@ static void persist() {
 }
 
 static bool loadFromFlash() {
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(SETTINGS_PAGE_ADDR);
+    const uint32_t* magic = reinterpret_cast<const uint32_t*>(base);
+    if (*magic != SETTINGS_MAGIC) return false;
+
+    const uint16_t* ver = reinterpret_cast<const uint16_t*>(base + 4);
+    if (*ver == 1u) {
+        const PersistedSettingsV1* v1 =
+            reinterpret_cast<const PersistedSettingsV1*>(SETTINGS_PAGE_ADDR);
+        if (v1->therapySubModeIndex > 2) return false;
+        g_settings.magic                = SETTINGS_MAGIC;
+        g_settings.version              = SETTINGS_VERSION;
+        g_settings.therapySubModeIndex  = v1->therapySubModeIndex;
+        g_settings.reserved             = 0;
+        g_settings.calY                 = 6.75f;
+        g_settings.calZ                 = 6.75f;
+        persist();  // migrate flash layout v1 -> v2
+        return true;
+    }
+    if (*ver != SETTINGS_VERSION) return false;
+
     const PersistedSettings* flash =
         reinterpret_cast<const PersistedSettings*>(SETTINGS_PAGE_ADDR);
-
-    if (flash->magic != SETTINGS_MAGIC) return false;
-    if (flash->version != SETTINGS_VERSION) return false;
-    if (flash->therapySubModeIndex > 2) return false;  // 0/1/2 = 5/10/20 min
+    if (flash->therapySubModeIndex > 2) return false;
 
     g_settings = *flash;
+    if (fabsf(g_settings.calY) < 0.1f && fabsf(g_settings.calZ) < 0.1f) {
+        g_settings.calY = 6.75f;
+        g_settings.calZ = 6.75f;
+    }
     return true;
 }
 
@@ -94,10 +128,27 @@ uint8_t storageLoadTherapySubMode() {
 }
 
 void storageSaveTherapySubMode(uint8_t idx) {
-    if (idx > 2) idx = 1;
+    if (idx > 2) idx = 0;
     if (g_settings.therapySubModeIndex == idx) return;  // avoid flash wear
     g_settings.therapySubModeIndex = idx;
     persist();
     rtt.print("Storage: saved therapy sub-mode = ");
     rtt.println((int)idx);
+}
+
+void storageLoadCalibration(float* y, float* z) {
+    if (y) *y = g_settings.calY;
+    if (z) *z = g_settings.calZ;
+}
+
+void storageSaveCalibration(float y, float z) {
+    if (fabsf(y) < 0.1f && fabsf(z) < 0.1f) {
+        y = 6.75f;
+        z = 6.75f;
+    }
+    if (g_settings.calY == y && g_settings.calZ == z) return;
+    g_settings.calY = y;
+    g_settings.calZ = z;
+    persist();
+    rtt.println("Storage: saved posture calibration");
 }

@@ -37,11 +37,21 @@
 #define VIB_INTENSITY_HIGH  230
 #define VIB_INTENSITY_MAX   255
 
+// ── Posture calibration (same defaults as ESP32 reference) ─────────────────
+#define CALIB_THRESHOLD   2.0f
+#define CALIB_MIN_SAMPLES 25
+
 // ── Therapy durations (ms) ────────────────────────────────
 #define THERAPY_DURATION_5_MIN   300000UL
 #define THERAPY_DURATION_10_MIN  600000UL
 #define THERAPY_DURATION_20_MIN  1200000UL
+#define THERAPY_DURATION_30_MIN  1800000UL
 #define THERAPY_PATTERN_MS       120000UL  // each pattern runs 2 min
+
+// ── Bluetooth (App compatibility) ──────────────────────────
+#define BLE_SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define BLE_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define BLE_DEVICE_NAME         "correct v1"
 
 // ── Therapy patterns (10 total) ───────────────────────────
 enum TherapyPattern {
@@ -55,5 +65,9 @@ enum TherapyPattern {
     PATTERN_DOUBLE_WAVE,
     PATTERN_ANTI_FATIGUE,
     PATTERN_PULSE_RAMP,
+    PATTERN_INSTANT_TRIPLE_BASE,
+    PATTERN_CONST_TRIPLE,
+    PATTERN_EXP_DOUBLE_SINE,
+    PATTERN_BREATH_EXP_SQUARE,
     PATTERN_COUNT
 };

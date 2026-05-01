@@ -1,5 +1,4 @@
 #include "button.h"
-#include "nrf.h"
 #include "calibration.h"
 #include "therapy.h"
 #include "storage.h"
@@ -7,16 +6,14 @@
 extern RTTStream rtt;
 
 // ── Name arrays ────────────────────────────────────────────────────────────
-const char* modeNames[]        = { "Tracking Mode", "Training Mode", "Therapy Mode" };
-const char* trainingSubModes[] = { "Instant", "Delayed" };
-const char* trackingSubModes[] = { "Off" };
-const char* therapySubModes[]  = { "5 min", "10 min", "20 min" };
+const char* modeNames[]        = { "Training Mode", "Therapy Mode", "OFF Mode" };
+const char* trainingSubModes[] = { "Instant", "Delayed", "No alerts" };
+const char* therapySubModes[]  = { "10 min", "20 min", "30 min" };
 
 // ── State definitions ──────────────────────────────────────────────────────
 bool    deviceOn             = true;
-Mode    currentMode          = MODE_TRACKING;
+Mode    currentMode          = MODE_TRAINING;
 uint8_t trainingSubModeIndex = 0;
-uint8_t trackingSubModeIndex = 0;
 uint8_t therapySubModeIndex  = 0;
 
 // ── LED (P0.15 → Arduino 4, common-anode: LOW = on) ────────────────────────
@@ -24,73 +21,17 @@ uint8_t therapySubModeIndex  = 0;
 #define LED_ON()       digitalWrite(PIN_BLINK_LED, LOW)
 #define LED_OFF()      digitalWrite(PIN_BLINK_LED, HIGH)
 
-// ── Internal button state ──────────────────────────────────────────────────
-static bool     lastRawState       = HIGH;
-static bool     stableState        = HIGH;
-static uint32_t debounceTimestamp  = 0;
+// Debounced button: one clean edge only after raw stable for DEBOUNCE_MS.
+static int      btnLastRaw        = HIGH;
+static uint32_t btnLastDebounceMs = 0;
+static bool     btnStablePressed  = false;  // true = electrical LOW (pressed)
 
-static bool     waitingSecondClick = false;
-static uint32_t firstClickTime     = 0;
-static uint8_t  clickCount         = 0;
+static uint32_t tapPressStartMs   = 0;
+static bool     tapPendingSecond  = false;
+static uint32_t tapFirstMs        = 0;
+static bool     holdConsumedTap   = false;
+static uint32_t lastAcceptedClickMs = 0;
 
-static bool     holdFired          = false;
-static uint32_t pressStartTime     = 0;
-
-// ── Sleep using System ON + WFI ────────────────────────────────────────────
-#define SLEEP_GPIOTE_CH  0
-
-extern "C" void GPIOTE_IRQHandler(void) {
-    NRF_GPIOTE->EVENTS_IN[SLEEP_GPIOTE_CH] = 0;
-    (void)NRF_GPIOTE->EVENTS_IN[SLEEP_GPIOTE_CH];
-}
-
-static void enterSleep() {
-    rtt.println("Device OFF — sleeping");
-    delay(10);
-
-    uint32_t nrfPin = g_ADigitalPinMap[PIN_BUTTON];
-    NRF_GPIOTE->CONFIG[SLEEP_GPIOTE_CH] =
-        (GPIOTE_CONFIG_MODE_Event      << GPIOTE_CONFIG_MODE_Pos)     |
-        (nrfPin                        << GPIOTE_CONFIG_PSEL_Pos)     |
-        (GPIOTE_CONFIG_POLARITY_HiToLo << GPIOTE_CONFIG_POLARITY_Pos);
-
-    NRF_GPIOTE->EVENTS_IN[SLEEP_GPIOTE_CH] = 0;
-    (void)NRF_GPIOTE->EVENTS_IN[SLEEP_GPIOTE_CH];
-
-    NRF_GPIOTE->INTENSET = (1UL << SLEEP_GPIOTE_CH);
-    NVIC_ClearPendingIRQ(GPIOTE_IRQn);
-    NVIC_EnableIRQ(GPIOTE_IRQn);
-
-    __DSB();
-    __WFI();
-
-    NRF_GPIOTE->INTENCLR = (1UL << SLEEP_GPIOTE_CH);
-    NVIC_DisableIRQ(GPIOTE_IRQn);
-    NRF_GPIOTE->CONFIG[SLEEP_GPIOTE_CH] =
-        (GPIOTE_CONFIG_MODE_Disabled << GPIOTE_CONFIG_MODE_Pos);
-
-    uint32_t waitStart = millis();
-    while (digitalRead(PIN_BUTTON) == LOW) {
-        if ((millis() - waitStart) > 3000) break;
-    }
-    delay(50);
-
-    lastRawState       = HIGH;
-    stableState        = HIGH;
-    debounceTimestamp  = millis();
-    waitingSecondClick = false;
-    clickCount         = 0;
-    holdFired          = false;
-    LED_OFF();
-
-    deviceOn    = true;
-    currentMode = MODE_TRACKING;
-    rtt.println("Device ON");
-    rtt.print("Mode: ");
-    rtt.println(modeNames[currentMode]);
-}
-
-// ── Internal helpers ───────────────────────────────────────────────────────
 enum ButtonEvent { EVT_NONE, EVT_SINGLE, EVT_DOUBLE, EVT_HOLD };
 
 static void printCurrentMode() {
@@ -99,26 +40,45 @@ static void printCurrentMode() {
 }
 
 static void handleSingleClick() {
-    rtt.println("Single click");
-    if (therapyIsRunning()) {
-        // therapyStop() sets currentMode to MODE_TRAINING automatically
-        therapyStop();
-        printCurrentMode();
+    uint32_t now = millis();
+    if ((now - lastAcceptedClickMs) < 350) {
         return;
     }
-    currentMode = (Mode)((currentMode + 1) % MODE_COUNT);
-    printCurrentMode();
-    if (currentMode == MODE_THERAPY) {
-        therapyStart();
+    lastAcceptedClickMs = now;
+
+    rtt.println("Single click");
+    switch (currentMode) {
+        case MODE_TRAINING:
+            rtt.println("Switch -> Therapy");
+            currentMode = MODE_THERAPY;
+            printCurrentMode();
+            rtt.print("Therapy Sub-Mode: ");
+            rtt.println(therapySubModes[therapySubModeIndex]);
+            therapyStart();
+            break;
+
+        case MODE_THERAPY:
+            rtt.println("Switch -> OFF");
+            if (therapyIsRunning()) {
+                therapyStop(false);
+            }
+            currentMode = MODE_OFF;
+            printCurrentMode();
+            break;
+
+        case MODE_OFF:
+            rtt.println("Switch -> Training");
+            currentMode = MODE_TRAINING;
+            printCurrentMode();
+            break;
+
+        default:
+            break;
     }
 }
 
 static void handleDoubleClick() {
     rtt.println("Double click");
-    if (currentMode == MODE_TRACKING) {
-        enterSleep();
-        return;
-    }
 
     switch (currentMode) {
         case MODE_TRAINING:
@@ -128,10 +88,8 @@ static void handleDoubleClick() {
             break;
 
         case MODE_THERAPY:
-            // Double-click cycles duration and restarts therapy
-            if (therapyIsRunning()) {
-                therapyStop();
-            }
+            // Stop session but stay in Therapy mode, then apply new duration
+            therapyStop(false);
             therapySubModeIndex = (therapySubModeIndex + 1) % THERAPY_SUBMODE_COUNT;
             storageSaveTherapySubMode(therapySubModeIndex);
             rtt.print("Therapy Sub-Mode changed: ");
@@ -139,6 +97,7 @@ static void handleDoubleClick() {
             therapyStart();
             break;
 
+        case MODE_OFF:
         default:
             break;
     }
@@ -146,89 +105,88 @@ static void handleDoubleClick() {
 
 static void handleHold() {
     rtt.println("Hold");
-    if (calibrationIsActive()) {
-        calibrationStop();
+    if (isCalibrating()) {
+        calibrationRequestCancel();
     } else {
-        calibrationStart();
+        calibrationRequestStart();
     }
 }
 
-static ButtonEvent pollButton() {
-    uint32_t now      = millis();
-    bool     rawState = digitalRead(PIN_BUTTON);
-
-    if (rawState != lastRawState) {
-        debounceTimestamp = now;
-        lastRawState      = rawState;
-    }
-
-    if ((now - debounceTimestamp) < DEBOUNCE_MS) {
-        if (waitingSecondClick && (now - firstClickTime) > DOUBLE_CLICK_GAP_MS) {
-            waitingSecondClick = false;
-            clickCount         = 0;
-            return EVT_SINGLE;
-        }
-        return EVT_NONE;
-    }
-
-    bool pressed = (rawState == LOW);
-
-    if (pressed && stableState == HIGH) {
-        stableState    = LOW;
-        pressStartTime = now;
-        holdFired      = false;
-        LED_ON();   // light P0.15 while pressed (held = stays on)
-    }
-
-    if (pressed && stableState == LOW && !holdFired) {
-        if ((now - pressStartTime) >= HOLD_MS) {
-            holdFired          = true;
-            waitingSecondClick = false;
-            clickCount         = 0;
-            return EVT_HOLD;
-        }
-    }
-
-    if (!pressed && stableState == LOW) {
-        stableState = HIGH;
-        LED_OFF();   // release → LED off
-
-        if (!holdFired) {
-            clickCount++;
-            if (clickCount == 1) {
-                waitingSecondClick = true;
-                firstClickTime     = now;
-            } else if (clickCount >= 2) {
-                waitingSecondClick = false;
-                clickCount         = 0;
-                return EVT_DOUBLE;
-            }
-        }
-        holdFired = false;
-    }
-
-    if (waitingSecondClick && (now - firstClickTime) > DOUBLE_CLICK_GAP_MS) {
-        waitingSecondClick = false;
-        clickCount         = 0;
+/** Emit pending single click after double-click window expired. */
+static ButtonEvent maybeEmitPendingSingle(uint32_t now) {
+    if (tapPendingSecond && (now - tapFirstMs) > DOUBLE_CLICK_GAP_MS) {
+        tapPendingSecond = false;
         return EVT_SINGLE;
     }
-
     return EVT_NONE;
 }
 
-// ── Public API ─────────────────────────────────────────────────────────────
+static ButtonEvent pollButton() {
+    uint32_t now = millis();
+    int      raw  = digitalRead(PIN_BUTTON);
+
+    if (raw != btnLastRaw) {
+        btnLastDebounceMs = now;
+        btnLastRaw        = raw;
+    }
+
+    if ((now - btnLastDebounceMs) < DEBOUNCE_MS) {
+        return maybeEmitPendingSingle(now);
+    }
+
+    bool pressed = (raw == LOW);
+
+    // Stable transition after debounce
+    if (pressed != btnStablePressed) {
+        btnStablePressed = pressed;
+
+        if (btnStablePressed) {
+            tapPressStartMs = now;
+            holdConsumedTap = false;
+            LED_ON();
+        } else {
+            LED_OFF();
+            if (!holdConsumedTap) {
+                uint32_t dur = now - tapPressStartMs;
+                // Real button press, not chatter; not a hold
+                if (dur >= 80 && dur < HOLD_MS) {
+                    if (tapPendingSecond && (now - tapFirstMs) <= DOUBLE_CLICK_GAP_MS) {
+                        tapPendingSecond = false;
+                        return EVT_DOUBLE;
+                    }
+                    tapPendingSecond = true;
+                    tapFirstMs       = now;
+                }
+            }
+            holdConsumedTap = false;
+        }
+    }
+
+    if (btnStablePressed && !holdConsumedTap && (now - tapPressStartMs) >= HOLD_MS) {
+        holdConsumedTap   = true;
+        tapPendingSecond  = false;
+        return EVT_HOLD;
+    }
+
+    return maybeEmitPendingSingle(now);
+}
+
 void buttonSetup() {
     pinMode(PIN_BUTTON,    INPUT_PULLUP);
     pinMode(PIN_BLINK_LED, OUTPUT);
-    LED_OFF();   // idle off (common anode)
+    LED_OFF();
 
     therapySubModeIndex = storageLoadTherapySubMode();
+    lastAcceptedClickMs = 0;
+    btnLastRaw          = digitalRead(PIN_BUTTON);
+    btnLastDebounceMs   = millis();
+    btnStablePressed    = (btnLastRaw == LOW);
+    tapPendingSecond    = false;
+    holdConsumedTap     = false;
 
     rtt.println("Device ON");
-    currentMode = MODE_TRACKING;
+    currentMode = MODE_TRAINING;
     printCurrentMode();
-    rtt.print("Therapy Sub-Mode: ");
-    rtt.println(therapySubModes[therapySubModeIndex]);
 }
 
 void buttonLoop() {
@@ -239,5 +197,10 @@ void buttonLoop() {
         case EVT_DOUBLE: handleDoubleClick(); break;
         case EVT_HOLD:   handleHold();        break;
         default: break;
+    }
+
+    if (currentMode == MODE_THERAPY && !therapyIsRunning() && !isCalibrating()) {
+        rtt.println("Therapy auto-start (mode is Therapy)");
+        therapyStart();
     }
 }
