@@ -212,8 +212,8 @@ void updatePostureAngle() {
                                                                           : "GOOD POSTURE";
 
     if (currentMode == MODE_TRAINING && isTrainingSessionActive()) {
-        snprintf(postureText, sizeof(postureText),
-                 "%s [#%lu %lus %lu-bad]", baseText,
+        /* Same layout as ESP32 posture_training: "GOOD POSTURE [S1:N …]" */
+        snprintf(postureText, sizeof(postureText), "%s [S1:%lu %lus %lu-bad]", baseText,
                  (unsigned long)getTrainingSessionNumber(),
                  (unsigned long)getTrainingSessionDurationSec(),
                  (unsigned long)getTrainingSessionBadPostureCount());
@@ -282,6 +282,13 @@ static void logTrainingSensorRtt(uint32_t now) {
  * No alerts: motor off.
  */
 static void applyTrainingMotorFeedback(uint32_t now) {
+    // Keep calibration haptics authoritative (start/ticks/fail/success windows).
+    if (calibrationMotorActive()) {
+        s_badMotorStartMs = 0;
+        s_vibOn = false;
+        return;
+    }
+
     if (trainingSubModeIndex >= TRAINING_SUBMODE_COUNT) {
         trainingSubModeIndex = 0;
     }

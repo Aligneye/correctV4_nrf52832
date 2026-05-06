@@ -32,3 +32,10 @@ void calibrationRequestCancel();
 void calibrationStart();
 void calibrationStop();
 bool calibrationIsActive();
+
+/**
+ * True while calibration logic should own motor output:
+ * - active calibration phases
+ * - post-result success/fail haptic windows
+ */
+bool calibrationMotorActive();

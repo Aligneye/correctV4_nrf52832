@@ -8,6 +8,8 @@
 #include "training.h"
 #include "calibration.h"
 #include "bluetooth.h"
+#include "autoOff.h"
+#include "device_time.h"
 
 RTTStream rtt;
 
@@ -41,6 +43,8 @@ void setup() {
     trainingSetup();
     calibrationSetup();
     bluetoothSetup();
+    initDeviceTime();
+    initAutoOff();
 }
 
 void loop() {
@@ -51,4 +55,6 @@ void loop() {
     trainingLoop();
     calibrationLoop();
     bluetoothLoop();
+    maintainDeviceTime();
+    checkAutoOff();
 }

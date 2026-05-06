@@ -19,12 +19,14 @@ static constexpr uint32_t CALIB_RESULT_BROADCAST_MS = 4000UL;
 static constexpr uint32_t kSafetyTimeoutMs       = 10000UL;
 static constexpr uint32_t kSampleIntervalMs    = 50UL;
 
-/** HAPTIC_CALIBRATION: MAX ~150 ms (vibration_therapy.cpp) */
-static constexpr uint32_t kCalibMotorPulseMs     = 150UL;
-/** HAPTIC_BUTTON tick: LOW ~30 ms */
-static constexpr uint32_t kCalibTickPulseMs      = 30UL;
-/** HAPTIC_FAILURE: HIGH ~1200 ms */
-static constexpr uint32_t kCalibFailMotorMs    = 1200UL;
+/** Start pulse — same role as ESP32 `playCalibrationFeedback(true)` initial buzz. */
+static constexpr uint32_t kCalibMotorPulseMs = 150UL;
+/** GET_READY tick — same as ESP32 `playButtonFeedback()` (~30 ms). */
+static constexpr uint32_t kCalibTickPulseMs = 30UL;
+/** Failure / timeout — ESP32 used `startVibration(255); delay(2000);`. */
+static constexpr uint32_t kCalibFailMotorMs = 2000UL;
+/** Success — ESP32 used `startVibration(255); delay(1000);`. */
+static constexpr uint32_t kCalibSuccessMotorMs = 1000UL;
 
 static volatile bool pendingStart  = false;
 static volatile bool pendingCancel = false;
@@ -341,8 +343,7 @@ void handleCalibration() {
         lastCalibrationResult[sizeof(lastCalibrationResult) - 1] = '\0';
         calibrationResultSetAt = millis();
 
-        /* playCalibrationFeedback(false): short MAX pulse (same as ESP32 HAPTIC_CALIBRATION) */
-        s_successPulseEndMs = millis() + kCalibMotorPulseMs;
+        s_successPulseEndMs = millis() + kCalibSuccessMotorMs;
         motorSetDuty(VIB_INTENSITY_MAX);
 
         goToTrainingMode();
@@ -378,4 +379,18 @@ void calibrationStop() {
 
 bool calibrationIsActive() {
     return isCalibrating();
+}
+
+bool calibrationMotorActive() {
+    if (isCalibrating()) {
+        return true;
+    }
+    const unsigned long now = millis();
+    if (s_failVibEndMs != 0u && (int32_t)(now - s_failVibEndMs) < 0) {
+        return true;
+    }
+    if (s_successPulseEndMs != 0u && (int32_t)(now - s_successPulseEndMs) < 0) {
+        return true;
+    }
+    return false;
 }
