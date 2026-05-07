@@ -30,3 +30,7 @@ bool bluetoothIsConnected() {
 void bluetoothRequestCalibrationStart() {
     calibrationRequestStart();
 }
+
+void notifyNewSessionStored() {
+    // Placeholder until BLE session sync transport is implemented.
+}

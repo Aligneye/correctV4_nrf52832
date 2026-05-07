@@ -1,4 +1,6 @@
 #include "storage.h"
+#include "session_log.h"
+#include "therapy.h"
 #include "nrf.h"
 #include <RTTStream.h>
 #include <string.h>
@@ -12,7 +14,7 @@ extern RTTStream rtt;
 // this project place the application well below this address.
 static constexpr uint32_t SETTINGS_PAGE_ADDR = 0x0007F000UL;
 static constexpr uint32_t SETTINGS_MAGIC     = 0x414C4733UL;  // "ALG3"
-static constexpr uint16_t SETTINGS_VERSION   = 2u;
+static constexpr uint16_t SETTINGS_VERSION   = 3u;
 
 struct PersistedSettingsV1 {
     uint32_t magic;
@@ -24,7 +26,7 @@ struct PersistedSettingsV1 {
 struct PersistedSettings {
     uint32_t magic;
     uint16_t version;
-    uint8_t  therapySubModeIndex;
+    uint8_t  trainingDelay;
     uint8_t  reserved;
     float     calY;
     float     calZ;
@@ -33,7 +35,7 @@ struct PersistedSettings {
 static PersistedSettings g_settings = {
     SETTINGS_MAGIC,
     SETTINGS_VERSION,
-    0u,
+    (uint8_t)TRAIN_INSTANT,
     0u,
     6.75f,
     6.75f
@@ -86,23 +88,39 @@ static bool loadFromFlash() {
 
     const uint16_t* ver = reinterpret_cast<const uint16_t*>(base + 4);
     if (*ver == 1u) {
-        const PersistedSettingsV1* v1 =
-            reinterpret_cast<const PersistedSettingsV1*>(SETTINGS_PAGE_ADDR);
-        if (v1->therapySubModeIndex > 2) return false;
         g_settings.magic                = SETTINGS_MAGIC;
         g_settings.version              = SETTINGS_VERSION;
-        g_settings.therapySubModeIndex  = v1->therapySubModeIndex;
+        g_settings.trainingDelay        = (uint8_t)TRAIN_INSTANT;
         g_settings.reserved             = 0;
         g_settings.calY                 = 6.75f;
         g_settings.calZ                 = 6.75f;
-        persist();  // migrate flash layout v1 -> v2
+        persist();  // migrate flash layout v1 -> v3
+        return true;
+    }
+    if (*ver == 2u) {
+        const PersistedSettings* v2 =
+            reinterpret_cast<const PersistedSettings*>(SETTINGS_PAGE_ADDR);
+        g_settings.magic         = SETTINGS_MAGIC;
+        g_settings.version       = SETTINGS_VERSION;
+        g_settings.trainingDelay = (uint8_t)TRAIN_INSTANT;
+        g_settings.reserved      = 0;
+        g_settings.calY          = v2->calY;
+        g_settings.calZ          = v2->calZ;
+        if (fabsf(g_settings.calY) < 0.1f && fabsf(g_settings.calZ) < 0.1f) {
+            g_settings.calY = 6.75f;
+            g_settings.calZ = 6.75f;
+        }
+        persist();  // migrate flash layout v2 -> v3
         return true;
     }
     if (*ver != SETTINGS_VERSION) return false;
 
     const PersistedSettings* flash =
         reinterpret_cast<const PersistedSettings*>(SETTINGS_PAGE_ADDR);
-    if (flash->therapySubModeIndex > 2) return false;
+    if (flash->trainingDelay < (uint8_t)TRAIN_DELAYED ||
+        flash->trainingDelay > (uint8_t)TRAIN_INSTANT) {
+        return false;
+    }
 
     g_settings = *flash;
     if (fabsf(g_settings.calY) < 0.1f && fabsf(g_settings.calZ) < 0.1f) {
@@ -115,30 +133,47 @@ static bool loadFromFlash() {
 // ── Public API ─────────────────────────────────────────────────────────────
 void storageSetup() {
     if (loadFromFlash()) {
-        rtt.print("Storage: loaded, therapy sub-mode = ");
-        rtt.println((int)g_settings.therapySubModeIndex);
+        rtt.print("Storage: loaded, training delay = ");
+        rtt.println((int)g_settings.trainingDelay);
     } else {
         rtt.println("Storage: empty, writing defaults");
         persist();
     }
+    session_log_init();
+}
+
+void saveTrainingDelay(TrainingDelay delay) {
+    uint8_t d = (uint8_t)delay;
+    if (d < (uint8_t)TRAIN_DELAYED || d > (uint8_t)TRAIN_INSTANT) {
+        d = (uint8_t)TRAIN_INSTANT;
+    }
+    if (g_settings.trainingDelay == d) return;
+    g_settings.trainingDelay = d;
+    persist();
+}
+
+TrainingDelay loadTrainingDelay() {
+    uint8_t d = g_settings.trainingDelay;
+    if (d < (uint8_t)TRAIN_DELAYED || d > (uint8_t)TRAIN_INSTANT) {
+        d = (uint8_t)TRAIN_INSTANT;
+    }
+    return (TrainingDelay)d;
 }
 
 uint8_t storageLoadTherapySubMode() {
-    return g_settings.therapySubModeIndex;
+    return (uint8_t)loadTrainingDelay();
 }
 
 void storageSaveTherapySubMode(uint8_t idx) {
-    if (idx > 2) idx = 0;
-    if (g_settings.therapySubModeIndex == idx) return;  // avoid flash wear
-    g_settings.therapySubModeIndex = idx;
-    persist();
-    rtt.print("Storage: saved therapy sub-mode = ");
-    rtt.println((int)idx);
+    saveTrainingDelay((TrainingDelay)idx);
+    rtt.print("Storage: saved training delay = ");
+    rtt.println((int)loadTrainingDelay());
 }
 
-void storageLoadCalibration(float* y, float* z) {
+bool storageLoadCalibration(float* y, float* z) {
     if (y) *y = g_settings.calY;
     if (z) *z = g_settings.calZ;
+    return true;
 }
 
 void storageSaveCalibration(float y, float z) {

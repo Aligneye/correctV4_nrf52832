@@ -27,6 +27,7 @@ bool     isTrainingSessionActive();
 uint32_t getTrainingSessionNumber();
 uint32_t getTrainingSessionDurationSec();
 uint32_t getTrainingSessionBadPostureCount();
+uint32_t getDeviceStepCount();
 
 extern float rawX, rawY, rawZ;
 extern float Y_ORIGIN, Z_ORIGIN;

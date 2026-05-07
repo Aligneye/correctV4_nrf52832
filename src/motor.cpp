@@ -19,7 +19,10 @@
 static constexpr uint32_t TIMER_FREQ_HZ  = 1000000UL;  // 1 MHz prescaler
 static constexpr uint32_t PWM_PERIOD_US  = 10000UL;     // 10 ms = 100 Hz
 
-static volatile uint8_t g_duty = 0;
+static volatile uint8_t g_dutyApplied = 0;
+static volatile uint8_t g_dutyWanted  = 0;
+static volatile uint8_t g_overrideDuty = 0;
+static volatile uint32_t g_overrideUntilMs = 0;
 
 // ── TIMER1 IRQ ─────────────────────────────────────────────────────────────
 extern "C" void TIMER1_IRQHandler(void) {
@@ -76,15 +79,9 @@ static void timerStart(uint8_t duty) {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
-void motorSetup() {
-    pinMode(PIN_MOTOR, OUTPUT);
-    digitalWrite(PIN_MOTOR, LOW);
-    g_duty = 0;
-}
-
-void motorSetDuty(uint8_t duty) {
-    if (duty == g_duty) return;
-    g_duty = duty;
+static void applyDuty(uint8_t duty) {
+    if (duty == g_dutyApplied) return;
+    g_dutyApplied = duty;
 
     if (duty == 0) {
         timerStop();
@@ -96,6 +93,44 @@ void motorSetDuty(uint8_t duty) {
     }
 }
 
-// motorUpdate() is kept for API compatibility but no longer needed —
-// the hardware timer fires the ISR independently of the main loop.
-void motorUpdate() {}
+static bool overrideActive(uint32_t nowMs) {
+    if (g_overrideUntilMs == 0u) return false;
+    if ((int32_t)(nowMs - g_overrideUntilMs) < 0) return true;
+    g_overrideUntilMs = 0u;
+    return false;
+}
+
+void motorSetup() {
+    pinMode(PIN_MOTOR, OUTPUT);
+    digitalWrite(PIN_MOTOR, LOW);
+    g_dutyApplied = 0;
+    g_dutyWanted = 0;
+    g_overrideDuty = 0;
+    g_overrideUntilMs = 0;
+}
+
+void motorSetDuty(uint8_t duty) {
+    g_dutyWanted = duty;
+    const uint32_t now = millis();
+    if (overrideActive(now)) {
+        return; // Keep temporary feedback pulse authoritative.
+    }
+    applyDuty(duty);
+}
+
+void motorOverrideDuty(uint8_t duty, uint16_t durationMs) {
+    if (durationMs == 0u) return;
+    const uint32_t now = millis();
+    g_overrideDuty = duty;
+    g_overrideUntilMs = now + durationMs;
+    applyDuty(g_overrideDuty);
+}
+
+void motorUpdate() {
+    const uint32_t now = millis();
+    if (overrideActive(now)) {
+        applyDuty(g_overrideDuty);
+        return;
+    }
+    applyDuty(g_dutyWanted);
+}

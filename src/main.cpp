@@ -10,6 +10,7 @@
 #include "bluetooth.h"
 #include "autoOff.h"
 #include "device_time.h"
+#include "motor.h"
 
 RTTStream rtt;
 
@@ -55,6 +56,7 @@ void loop() {
     trainingLoop();
     calibrationLoop();
     bluetoothLoop();
+    motorUpdate();
     maintainDeviceTime();
     checkAutoOff();
 }

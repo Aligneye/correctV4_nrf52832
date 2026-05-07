@@ -2,6 +2,8 @@
 #include "calibration.h"
 #include "therapy.h"
 #include "storage.h"
+#include "autoOff.h"
+#include "motor.h"
 
 extern RTTStream rtt;
 
@@ -31,8 +33,15 @@ static bool     tapPendingSecond  = false;
 static uint32_t tapFirstMs        = 0;
 static bool     holdConsumedTap   = false;
 static uint32_t lastAcceptedClickMs = 0;
+static bool     suppressEventsUntilRelease = false;
 
 enum ButtonEvent { EVT_NONE, EVT_SINGLE, EVT_DOUBLE, EVT_HOLD };
+
+static void playButtonPressHaptic() {
+    // Keep calibration haptics authoritative.
+    if (calibrationMotorActive()) return;
+    motorOverrideDuty(VIB_INTENSITY_LOW, 45);
+}
 
 static void printCurrentMode() {
     rtt.print("Mode: ");
@@ -50,6 +59,7 @@ static void handleSingleClick() {
     switch (currentMode) {
         case MODE_TRAINING:
             rtt.println("Switch -> Therapy");
+            deviceOn = true;
             currentMode = MODE_THERAPY;
             printCurrentMode();
             rtt.print("Therapy Sub-Mode: ");
@@ -62,12 +72,14 @@ static void handleSingleClick() {
             if (therapyIsRunning()) {
                 therapyStop(false);
             }
+            deviceOn = false;
             currentMode = MODE_OFF;
             printCurrentMode();
             break;
 
         case MODE_OFF:
             rtt.println("Switch -> Training");
+            deviceOn = true;
             currentMode = MODE_TRAINING;
             printCurrentMode();
             break;
@@ -125,6 +137,28 @@ static ButtonEvent pollButton() {
     uint32_t now = millis();
     int      raw  = digitalRead(PIN_BUTTON);
 
+    // After a HOLD, ignore all button events until a clean release is seen.
+    // This prevents re-trigger/cancel from bounce while user is releasing.
+    if (suppressEventsUntilRelease) {
+        if (raw == HIGH) {
+            if (raw != btnLastRaw) {
+                btnLastDebounceMs = now;
+                btnLastRaw = raw;
+            }
+            if ((now - btnLastDebounceMs) >= DEBOUNCE_MS) {
+                suppressEventsUntilRelease = false;
+                btnStablePressed = false;
+                holdConsumedTap = false;
+                tapPendingSecond = false;
+                LED_OFF();
+            }
+        } else {
+            // Keep visible feedback off while calibration sequence is active.
+            LED_OFF();
+        }
+        return EVT_NONE;
+    }
+
     if (raw != btnLastRaw) {
         btnLastDebounceMs = now;
         btnLastRaw        = raw;
@@ -165,6 +199,8 @@ static ButtonEvent pollButton() {
     if (btnStablePressed && !holdConsumedTap && (now - tapPressStartMs) >= HOLD_MS) {
         holdConsumedTap   = true;
         tapPendingSecond  = false;
+        suppressEventsUntilRelease = true;
+        LED_OFF();
         return EVT_HOLD;
     }
 
@@ -192,6 +228,13 @@ void buttonSetup() {
 void buttonLoop() {
     ButtonEvent evt = pollButton();
 
+    // Give immediate haptic feedback on a valid button event *before*
+    // mode/sub-mode logic potentially starts other motor patterns.
+    if (evt != EVT_NONE) {
+        playButtonPressHaptic();
+        autoOffMarkActivity();
+    }
+
     switch (evt) {
         case EVT_SINGLE: handleSingleClick(); break;
         case EVT_DOUBLE: handleDoubleClick(); break;
@@ -202,5 +245,9 @@ void buttonLoop() {
     if (currentMode == MODE_THERAPY && !therapyIsRunning() && !isCalibrating()) {
         rtt.println("Therapy auto-start (mode is Therapy)");
         therapyStart();
+    }
+
+    if (isCalibrating()) {
+        LED_OFF();
     }
 }

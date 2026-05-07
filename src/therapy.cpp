@@ -22,7 +22,9 @@ static bool patternsInitialized = false;
 #define MAX_THERAPY_PATTERNS 20
 static int patternSequence[MAX_THERAPY_PATTERNS];
 static int totalPatterns = 0;
-static int currentPatternIndex = 0;
+int currentPatternIndex = 0;
+TrainingDelay currentTrainingDelay = TRAIN_INSTANT;
+unsigned long therapyDuration = THERAPY_DURATION_10_MIN;
 
 static unsigned long durationForSubMode(uint8_t idx) {
     switch (idx) {
@@ -31,6 +33,37 @@ static unsigned long durationForSubMode(uint8_t idx) {
         case 2: return THERAPY_DURATION_30_MIN;
         default: return THERAPY_DURATION_10_MIN;
     }
+}
+
+uint16_t getTherapyTotalPatternCount() {
+    return (uint16_t)totalPatterns;
+}
+
+uint16_t getTherapyUniquePatternCount() {
+    bool seen[PATTERN_COUNT] = {false};
+    uint16_t unique = 0;
+    for (int i = 0; i < totalPatterns; i++) {
+        int p = patternSequence[i];
+        if (p >= 0 && p < PATTERN_COUNT && !seen[p]) {
+            seen[p] = true;
+            unique++;
+        }
+    }
+    return unique;
+}
+
+int getTherapyPatternSequence(uint8_t* out, uint8_t maxLen) {
+    if (out == nullptr || maxLen == 0) return 0;
+    int n = (totalPatterns < (int)maxLen) ? totalPatterns : (int)maxLen;
+    for (int i = 0; i < n; i++) {
+        out[i] = (uint8_t)patternSequence[i];
+    }
+    return n;
+}
+
+const char* getPatternNameByIndex(int idx) {
+    if (idx < 0 || idx >= PATTERN_COUNT) return "Unknown";
+    return PATTERN_NAMES[idx];
 }
 
 static void initializePatternSequence() {
@@ -226,6 +259,7 @@ void therapySetup() {
 
 void therapyStart() {
     therapyDurationMs = durationForSubMode(therapySubModeIndex);
+    therapyDuration = therapyDurationMs;
     therapyStartMs = millis();
     patternStartMs = therapyStartMs;
     lastTickMs = therapyStartMs;

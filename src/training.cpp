@@ -3,6 +3,7 @@
 #include "storage.h"
 #include "motor.h"
 #include "calibration.h"
+#include "step_count.h"
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
@@ -59,6 +60,14 @@ static void trainingIngestAccelSample(void) {
     rawY = e.acceleration.y;
     rawZ = e.acceleration.z;
 
+    const uint32_t stepBefore = stepCountGetTotal();
+    stepCountProcessSample(rawX, rawY, rawZ, millis());
+    const uint32_t stepAfter = stepCountGetTotal();
+    if (stepAfter > stepBefore) {
+        rtt.print("[Step Trigger] count=");
+        rtt.println((unsigned long)stepAfter);
+    }
+
     if (g_fx == 0.0f && g_fy == 0.0f && g_fz == 0.0f) {
         g_fx = rawX;
         g_fy = rawY;
@@ -114,13 +123,13 @@ static void loadStoredCalibration() {
     Z_ORIGIN = loadedZ;
 }
 
-void setPostureOrigin(float y, float z) {
-    if (fabsf(y) < kNearZero && fabsf(z) < kNearZero) {
-        y = kDefaultOriginY;
-        z = kDefaultOriginZ;
+void setPostureOrigin(float avgY, float avgZ) {
+    if (fabsf(avgY) < kNearZero && fabsf(avgZ) < kNearZero) {
+        avgY = kDefaultOriginY;
+        avgZ = kDefaultOriginZ;
     }
-    Y_ORIGIN = fabsf(y);
-    Z_ORIGIN = z;
+    Y_ORIGIN = fabsf(avgY);
+    Z_ORIGIN = avgZ;
     storageSaveCalibration(Y_ORIGIN, Z_ORIGIN);
 
     /*
@@ -129,8 +138,8 @@ void setPostureOrigin(float y, float z) {
      * Seed LPF from the calibration vector (y,z) and last raw X; align motion baseline.
      */
     g_fx               = rawX;
-    g_fy               = y;
-    g_fz               = z;
+    g_fy               = avgY;
+    g_fz               = avgZ;
     s_motionPrevX      = rawX;
     s_motionPrevY      = rawY;
     s_motionPrevZ      = rawZ;
@@ -273,7 +282,9 @@ static void logTrainingSensorRtt(uint32_t now) {
     rtt.print(" | ");
     rtt.print(postureText);
     rtt.print(" | sub=");
-    rtt.println(trainingSubModes[trainingSubModeIndex]);
+    rtt.print(trainingSubModes[trainingSubModeIndex]);
+    rtt.print(" | steps=");
+    rtt.println((unsigned long)stepCountGetTotal());
 }
 
 /**
@@ -359,6 +370,10 @@ uint32_t getTrainingSessionBadPostureCount() {
     return s_badPostureCount;
 }
 
+uint32_t getDeviceStepCount() {
+    return stepCountGetTotal();
+}
+
 void trainingStart() {
     s_sessionStartMs  = millis();
     s_sessionNumber++;
@@ -377,6 +392,7 @@ void trainingStop() {
 }
 
 void trainingSetup() {
+    stepCountInit();
     initPostureSensor();
 }
 
@@ -400,7 +416,6 @@ void trainingLoop() {
         if (s_lastModeForSession != MODE_TRAINING) {
             wakePostureSensor();
             trainingStart();
-            s_lastSensorRttMs = 0;
             s_lastModeForSession = MODE_TRAINING;
         }
         updatePostureAngle();
